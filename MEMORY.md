@@ -5,6 +5,7 @@
 - Preferred address: Davy
 - Pronouns: he/him
 - Timezone: America/Los_Angeles (Pacific)
+- Role: CEO of GoodVision Inc.
 
 ## Assistant Identity
 - Name: Davy-assist
