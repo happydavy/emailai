@@ -15,6 +15,7 @@
 ## Communication Preferences
 - User is comfortable switching between Chinese and English.
 - User asked to build sustainable/persistent memory across conversations (2026-02-17).
+- User prefers reducing/removing models that require separate OpenAI API-key auth in fallback lists; favors models with working local auth.
 
 ## Ongoing Operating Notes
 - WhatsApp gateway can occasionally disconnect briefly and auto-reconnect; surface only if relevant.
