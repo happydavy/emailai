@@ -369,16 +369,16 @@ function App() {
       </header>
 
       <section className="card">
-        <h2>Step 1 · Gmail OAuth (PKCE)</h2>
-        <p className="hint">Use Desktop OAuth client_id, then authorize in browser and paste the <code>code</code> from callback URL.</p>
+        <h2>Gmail 登录（浏览器授权）</h2>
+        <p className="hint">用户点击“使用 Gmail 登录”后会自动跳转浏览器授权；授权完成后把回调 URL 里的 <code>code</code> 粘贴回来完成登录。</p>
         <div className="row">
           <input value={clientId} onChange={(e) => setClientId(e.target.value)} placeholder="Google OAuth Client ID" />
-          <button disabled={!canStart || busy} onClick={startPkceLogin}>{busy ? 'Opening…' : 'Open Google Login'}</button>
+          <button disabled={!canStart || busy} onClick={startPkceLogin}>{busy ? '跳转中…' : '使用 Gmail 登录'}</button>
         </div>
 
         <div className="row" style={{ marginTop: 8 }}>
-          <input value={authCode} onChange={(e) => setAuthCode(e.target.value)} placeholder="Paste authorization code from callback URL" />
-          <button disabled={!authCode.trim() || busy} onClick={exchangeCode}>{busy ? 'Exchanging…' : 'Exchange Code'}</button>
+          <input value={authCode} onChange={(e) => setAuthCode(e.target.value)} placeholder="粘贴回调 URL 中的 code" />
+          <button disabled={!authCode.trim() || busy} onClick={exchangeCode}>{busy ? '登录中…' : '完成登录'}</button>
         </div>
 
         {token && (
