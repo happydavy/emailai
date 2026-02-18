@@ -70,6 +70,14 @@ const PRIORITY_KEYWORDS = ['urgent', 'asap', 'action required', 'deadline', 'fol
 const LOW_PRIORITY_HINTS = ['newsletter', 'unsubscribe', 'promotion', 'sale', 'digest']
 const KEYCHAIN_TOKEN_KEY = 'gmail_token'
 
+type StoredMail = {
+  id: string
+  from: string
+  subject: string
+  date: string
+  snippet: string
+}
+
 async function keychainSet(key: string, value: string) {
   await invoke('keychain_set', { key, value })
 }
@@ -88,6 +96,38 @@ async function keychainDelete(key: string) {
     await invoke('keychain_delete', { key })
   } catch {
     // ignore
+  }
+}
+
+async function mailsSave(items: StoredMail[]) {
+  try {
+    await invoke('mails_save', { mails: items })
+  } catch {
+    localStorage.setItem('mailpilot.gmail.mails', JSON.stringify(items))
+  }
+}
+
+async function mailsLoad(): Promise<StoredMail[]> {
+  try {
+    const rows = await invoke<StoredMail[]>('mails_load', { limit: 50 })
+    return Array.isArray(rows) ? rows : []
+  } catch {
+    const fallback = localStorage.getItem('mailpilot.gmail.mails')
+    if (!fallback) return []
+    try {
+      const parsed = JSON.parse(fallback) as StoredMail[]
+      return Array.isArray(parsed) ? parsed : []
+    } catch {
+      return []
+    }
+  }
+}
+
+async function mailsClear() {
+  try {
+    await invoke('mails_clear')
+  } catch {
+    localStorage.removeItem('mailpilot.gmail.mails')
   }
 }
 
@@ -189,8 +229,6 @@ function App() {
 
   useEffect(() => {
     const load = async () => {
-      const savedMails = localStorage.getItem('mailpilot.gmail.mails')
-
       const fromKeychain = await keychainGet(KEYCHAIN_TOKEN_KEY)
       if (fromKeychain) {
         try {
@@ -212,13 +250,9 @@ function App() {
         }
       }
 
-      if (savedMails) {
-        try {
-          const parsedMails = JSON.parse(savedMails) as MailItem[]
-          if (Array.isArray(parsedMails)) setMails(parsedMails)
-        } catch {
-          // ignore
-        }
+      const parsedMails = await mailsLoad()
+      if (parsedMails.length > 0) {
+        setMails(parsedMails)
       }
     }
 
@@ -368,7 +402,7 @@ function App() {
         })
 
       setMails(parsed)
-      localStorage.setItem('mailpilot.gmail.mails', JSON.stringify(parsed))
+      await mailsSave(parsed)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to fetch mails')
     } finally {
@@ -385,8 +419,8 @@ function App() {
 
   const clearLocalData = async () => {
     localStorage.removeItem('mailpilot.gmail.token')
-    localStorage.removeItem('mailpilot.gmail.mails')
     await keychainDelete(KEYCHAIN_TOKEN_KEY)
+    await mailsClear()
     setToken(null)
     setMails([])
     setDevice(null)
