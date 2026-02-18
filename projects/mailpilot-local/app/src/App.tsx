@@ -201,6 +201,7 @@ function generateReplyDraft(mail: RankedMail, tone: DraftTone) {
 
 function App() {
   const [authCode, setAuthCode] = useState('')
+  const [waitingCallback, setWaitingCallback] = useState(false)
   const [token, setToken] = useState<TokenResponse | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -228,6 +229,35 @@ function App() {
     void load()
   }, [])
 
+  const exchangeCodeValue = async (codeValue: string) => {
+    const verifier = await keychainGet(KEYCHAIN_PKCE_KEY)
+    if (!verifier) throw new Error('No PKCE verifier found. Please restart login.')
+
+    const body = new URLSearchParams({
+      client_id: GOOGLE_CLIENT_ID,
+      code: codeValue.trim(),
+      code_verifier: verifier,
+      grant_type: 'authorization_code',
+      redirect_uri: REDIRECT_URI,
+    })
+
+    const res = await fetch(GOOGLE_TOKEN_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body,
+    })
+    const payload = await res.json()
+    if (!res.ok || !payload?.access_token) {
+      throw new Error(payload?.error_description || payload?.error || `Token exchange failed: ${res.status}`)
+    }
+
+    const data = payload as TokenResponse
+    setToken(data)
+    await keychainSet(KEYCHAIN_TOKEN_KEY, JSON.stringify(data))
+    await keychainDelete(KEYCHAIN_PKCE_KEY)
+    setAuthCode('')
+  }
+
   const startPkceLogin = async () => {
     setError('')
     setBusy(true)
@@ -247,10 +277,15 @@ function App() {
         prompt: 'consent',
       })
 
+      setWaitingCallback(true)
+      const waitCodePromise = invoke<string>('oauth_wait_code', { timeoutSecs: 180 })
       await openUrl(`${GOOGLE_AUTH_ENDPOINT}?${params.toString()}`)
+      const callbackCode = await waitCodePromise
+      await exchangeCodeValue(callbackCode)
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to start PKCE login')
+      setError(e instanceof Error ? e.message : 'Failed to complete browser login')
     } finally {
+      setWaitingCallback(false)
       setBusy(false)
     }
   }
@@ -259,32 +294,7 @@ function App() {
     setError('')
     setBusy(true)
     try {
-      const verifier = await keychainGet(KEYCHAIN_PKCE_KEY)
-      if (!verifier) throw new Error('No PKCE verifier found. Please restart login.')
-
-      const body = new URLSearchParams({
-        client_id: GOOGLE_CLIENT_ID,
-        code: authCode.trim(),
-        code_verifier: verifier,
-        grant_type: 'authorization_code',
-        redirect_uri: REDIRECT_URI,
-      })
-
-      const res = await fetch(GOOGLE_TOKEN_ENDPOINT, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body,
-      })
-      const payload = await res.json()
-      if (!res.ok || !payload?.access_token) {
-        throw new Error(payload?.error_description || payload?.error || `Token exchange failed: ${res.status}`)
-      }
-
-      const data = payload as TokenResponse
-      setToken(data)
-      await keychainSet(KEYCHAIN_TOKEN_KEY, JSON.stringify(data))
-      await keychainDelete(KEYCHAIN_PKCE_KEY)
-      setAuthCode('')
+      await exchangeCodeValue(authCode)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Code exchange failed')
     } finally {
@@ -370,10 +380,11 @@ function App() {
 
       <section className="card">
         <h2>Gmail 登录（浏览器授权）</h2>
-        <p className="hint">用户点击“使用 Gmail 登录”后会自动跳转浏览器授权；授权完成后把回调 URL 里的 <code>code</code> 粘贴回来完成登录。</p>
+        <p className="hint">点击“使用 Gmail 登录”后会自动跳转浏览器授权，并自动完成回调登录（无感）。若自动回调失败，可手动粘贴 code 作为兜底。</p>
         <div className="row">
-          <button disabled={!canStart || busy} onClick={startPkceLogin}>{busy ? '跳转中…' : '使用 Gmail 登录'}</button>
+          <button disabled={!canStart || busy} onClick={startPkceLogin}>{busy ? '处理中…' : '使用 Gmail 登录'}</button>
         </div>
+        {waitingCallback && <p className="hint">正在等待浏览器授权回调，请完成 Google 登录…</p>}
         {!canStart && <p className="err">⚠️ 应用未配置 Google OAuth client_id（VITE_GOOGLE_CLIENT_ID）。</p>}
 
         <div className="row" style={{ marginTop: 8 }}>

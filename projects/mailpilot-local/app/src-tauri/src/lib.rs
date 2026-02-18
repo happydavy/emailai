@@ -1,6 +1,9 @@
 use keyring::Entry;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
+use std::io::{Read, Write};
+use std::net::TcpListener;
+use std::time::{Duration, Instant};
 
 const KEYCHAIN_SERVICE: &str = "mailpilot-local";
 
@@ -138,6 +141,68 @@ fn mails_clear() -> Result<(), String> {
     })
 }
 
+#[tauri::command]
+fn oauth_wait_code(timeout_secs: Option<u64>) -> Result<String, String> {
+    let timeout = Duration::from_secs(timeout_secs.unwrap_or(180).max(30));
+    let listener = TcpListener::bind("127.0.0.1:8765").map_err(|e| e.to_string())?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|e| e.to_string())?;
+
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        match listener.accept() {
+            Ok((mut stream, _addr)) => {
+                let mut buffer = [0u8; 4096];
+                let n = stream.read(&mut buffer).map_err(|e| e.to_string())?;
+                let req = String::from_utf8_lossy(&buffer[..n]);
+                let first_line = req.lines().next().unwrap_or_default();
+
+                let mut code = String::new();
+                if let Some(path_start) = first_line.split_whitespace().nth(1) {
+                    if let Some(query) = path_start.split('?').nth(1) {
+                        for pair in query.split('&') {
+                            let mut it = pair.splitn(2, '=');
+                            let k = it.next().unwrap_or_default();
+                            let v = it.next().unwrap_or_default();
+                            if k == "code" {
+                                code = urlencoding::decode(v)
+                                    .map_err(|e| e.to_string())?
+                                    .to_string();
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                let body = if code.is_empty() {
+                    "<html><body><h3>Login failed: missing code.</h3></body></html>"
+                } else {
+                    "<html><body><h3>Login successful. You can return to MailPilot now.</h3></body></html>"
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+
+                if code.is_empty() {
+                    return Err("Missing OAuth code in callback URL".to_string());
+                }
+                return Ok(code);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(120));
+            }
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+
+    Err("Timed out waiting for OAuth callback".to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -148,7 +213,8 @@ pub fn run() {
             keychain_delete,
             mails_save,
             mails_load,
-            mails_clear
+            mails_clear,
+            oauth_wait_code
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
