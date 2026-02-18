@@ -140,6 +140,12 @@ button:disabled {
   display: flex;
   gap: 8px;
   margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+button.secondary {
+  background: #e5e7eb;
+  color: #111827;
 }
 
 .draft {

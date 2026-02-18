@@ -61,8 +61,8 @@ const tasks: Task[] = [
   { id: 'auth', title: 'Gmail OAuth login + Keychain token', status: 'done' },
   { id: 'sync', title: 'Fetch last 7 days emails', status: 'done' },
   { id: 'rank', title: 'Top 5 priority scoring', status: 'done' },
-  { id: 'summary', title: '3-line AI summary + action', status: 'doing' },
-  { id: 'draft', title: 'Reply draft + copy', status: 'todo' },
+  { id: 'summary', title: '3-line AI summary + action', status: 'done' },
+  { id: 'draft', title: 'Reply draft + copy', status: 'done' },
 ]
 
 const PRIORITY_KEYWORDS = ['urgent', 'asap', 'action required', 'deadline', 'follow up', 'payment', 'invoice', 'meeting']
@@ -166,12 +166,24 @@ function App() {
 
   useEffect(() => {
     const saved = localStorage.getItem('mailpilot.gmail.token')
-    if (!saved) return
-    try {
-      const parsed = JSON.parse(saved) as TokenResponse
-      if (parsed.access_token) setToken(parsed)
-    } catch {
-      // ignore
+    const savedMails = localStorage.getItem('mailpilot.gmail.mails')
+
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved) as TokenResponse
+        if (parsed.access_token) setToken(parsed)
+      } catch {
+        // ignore
+      }
+    }
+
+    if (savedMails) {
+      try {
+        const parsedMails = JSON.parse(savedMails) as MailItem[]
+        if (Array.isArray(parsedMails)) setMails(parsedMails)
+      } catch {
+        // ignore
+      }
     }
   }, [])
 
@@ -310,6 +322,7 @@ function App() {
         })
 
       setMails(parsed)
+      localStorage.setItem('mailpilot.gmail.mails', JSON.stringify(parsed))
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to fetch mails')
     } finally {
@@ -322,6 +335,17 @@ function App() {
     await navigator.clipboard.writeText(draft)
     setCopiedId(mail.id)
     setTimeout(() => setCopiedId((current) => (current === mail.id ? null : current)), 1500)
+  }
+
+  const clearLocalData = () => {
+    localStorage.removeItem('mailpilot.gmail.token')
+    localStorage.removeItem('mailpilot.gmail.mails')
+    setToken(null)
+    setMails([])
+    setDevice(null)
+    setExpandedDraftId(null)
+    setCopiedId(null)
+    setError('')
   }
 
   return (
@@ -368,9 +392,14 @@ function App() {
         {token && (
           <div className="oauth-box">
             <p className="ok">✅ Gmail connected.</p>
-            <button disabled={mailLoading} onClick={fetchMails}>
-              {mailLoading ? 'Syncing…' : 'Fetch recent emails'}
-            </button>
+            <div className="actions">
+              <button disabled={mailLoading} onClick={fetchMails}>
+                {mailLoading ? 'Syncing…' : 'Fetch recent emails'}
+              </button>
+              <button className="secondary" onClick={clearLocalData}>
+                Disconnect + Wipe Local Data
+              </button>
+            </div>
           </div>
         )}
 
