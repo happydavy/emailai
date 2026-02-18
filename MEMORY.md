@@ -17,9 +17,10 @@
 - User is comfortable switching between Chinese and English.
 - User asked to build sustainable/persistent memory across conversations (2026-02-17).
 - User prefers reducing/removing models that require separate OpenAI API-key auth in fallback lists; favors models with working local auth.
+- 邮件处理偏好：忽略 Guidepoint 相关邮件（如咨询邀约）。
 
 ## Ongoing Operating Notes
 - WhatsApp gateway can occasionally disconnect briefly and auto-reconnect; surface only if relevant.
 
 ## Last Updated
-- 2026-02-17
+- 2026-02-18
