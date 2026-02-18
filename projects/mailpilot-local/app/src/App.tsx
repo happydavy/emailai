@@ -1,19 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import { openUrl } from '@tauri-apps/plugin-opener'
 import './App.css'
 
 type Task = {
   id: string
   title: string
   status: 'todo' | 'doing' | 'done'
-}
-
-type DeviceCodeResponse = {
-  device_code: string
-  user_code: string
-  verification_url: string
-  expires_in: number
-  interval: number
 }
 
 type TokenResponse = {
@@ -33,7 +26,6 @@ type GmailMessage = {
   id: string
   threadId: string
   snippet: string
-  internalDate: string
   payload?: {
     headers?: { name: string; value: string }[]
   }
@@ -54,9 +46,15 @@ type RankedMail = MailItem & {
 
 type DraftTone = 'professional' | 'friendly'
 
-const GOOGLE_DEVICE_CODE_ENDPOINT = 'https://oauth2.googleapis.com/device/code'
+type StoredMail = MailItem
+
 const GOOGLE_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token'
+const GOOGLE_AUTH_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth'
 const GMAIL_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly'
+const REDIRECT_URI = 'http://127.0.0.1:8765/callback'
+
+const KEYCHAIN_TOKEN_KEY = 'gmail_token'
+const KEYCHAIN_PKCE_KEY = 'gmail_pkce_verifier'
 
 const tasks: Task[] = [
   { id: 'auth', title: 'Gmail OAuth login + Keychain token', status: 'done' },
@@ -68,14 +66,24 @@ const tasks: Task[] = [
 
 const PRIORITY_KEYWORDS = ['urgent', 'asap', 'action required', 'deadline', 'follow up', 'payment', 'invoice', 'meeting']
 const LOW_PRIORITY_HINTS = ['newsletter', 'unsubscribe', 'promotion', 'sale', 'digest']
-const KEYCHAIN_TOKEN_KEY = 'gmail_token'
 
-type StoredMail = {
-  id: string
-  from: string
-  subject: string
-  date: string
-  snippet: string
+const randomString = (len = 64) => {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~'
+  let out = ''
+  const arr = crypto.getRandomValues(new Uint8Array(len))
+  for (const n of arr) out += chars[n % chars.length]
+  return out
+}
+
+const base64Url = (bytes: Uint8Array) => {
+  let binary = ''
+  bytes.forEach((b) => (binary += String.fromCharCode(b)))
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
+async function sha256Base64Url(input: string) {
+  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input))
+  return base64Url(new Uint8Array(hash))
 }
 
 async function keychainSet(key: string, value: string) {
@@ -84,8 +92,7 @@ async function keychainSet(key: string, value: string) {
 
 async function keychainGet(key: string): Promise<string | null> {
   try {
-    const value = await invoke<string>('keychain_get', { key })
-    return value
+    return await invoke<string>('keychain_get', { key })
   } catch {
     return null
   }
@@ -139,7 +146,6 @@ function getHeader(headers: { name: string; value: string }[] | undefined, key: 
 function rankMail(item: MailItem): RankedMail {
   let score = 0
   const reasons: string[] = []
-
   const subjectLower = item.subject.toLowerCase()
   const fromLower = item.from.toLowerCase()
   const snippetLower = item.snippet.toLowerCase()
@@ -151,17 +157,14 @@ function rankMail(item: MailItem): RankedMail {
       break
     }
   }
-
   if (fromLower.includes('@gmail.com') || fromLower.includes('@qq.com')) {
     score += 1
     reasons.push('personal-sender')
   }
-
   if (subjectLower.startsWith('re:')) {
     score += 1
     reasons.push('active-thread')
   }
-
   for (const hint of LOW_PRIORITY_HINTS) {
     if (subjectLower.includes(hint) || snippetLower.includes(hint)) {
       score -= 2
@@ -169,33 +172,21 @@ function rankMail(item: MailItem): RankedMail {
       break
     }
   }
-
   return { ...item, score, reasons }
 }
 
 function summarizeSnippet(text: string) {
   const clean = text.replace(/\s+/g, ' ').trim()
   if (!clean) return ['No content available.', '', '']
-
   const chunks = clean.match(/[^.!?。！？]{20,120}[.!?。！？]?/g) || [clean]
-  const line1 = chunks[0] || clean.slice(0, 90)
-  const line2 = chunks[1] || clean.slice(90, 180)
-  const line3 = chunks[2] || clean.slice(180, 270)
-
-  return [line1, line2, line3].map((x) => (x || '').trim()).filter(Boolean)
+  return [chunks[0], chunks[1], chunks[2]].map((x) => (x || '').trim()).filter(Boolean)
 }
 
 function suggestAction(mail: RankedMail) {
   const text = `${mail.subject} ${mail.snippet}`.toLowerCase()
-  if (mail.score >= 2 || text.includes('reply') || text.includes('confirm') || text.includes('approve')) {
-    return '回复'
-  }
-  if (text.includes('meeting') || text.includes('schedule') || text.includes('tomorrow') || text.includes('today')) {
-    return '稍后'
-  }
-  if (mail.score <= -1) {
-    return '归档'
-  }
+  if (mail.score >= 2 || text.includes('reply') || text.includes('confirm') || text.includes('approve')) return '回复'
+  if (text.includes('meeting') || text.includes('schedule') || text.includes('tomorrow') || text.includes('today')) return '稍后'
+  if (mail.score <= -1) return '归档'
   return '稍后'
 }
 
@@ -204,17 +195,15 @@ function generateReplyDraft(mail: RankedMail, tone: DraftTone) {
   if (tone === 'friendly') {
     return `Hi,\n\nThanks for your email about "${mail.subject}".\n\nI reviewed this and my quick response is:\n- ${summary[0] || 'Got it.'}\n- ${summary[1] || 'I will follow up shortly.'}\n\nBest,\nDavy`
   }
-
   return `Hello,\n\nThank you for your message regarding "${mail.subject}".\n\nMy preliminary response:\n- ${summary[0] || 'Acknowledged.'}\n- ${summary[1] || 'I will review and follow up.'}\n\nRegards,\nDavy`
 }
 
 function App() {
   const [clientId, setClientId] = useState('')
-  const [device, setDevice] = useState<DeviceCodeResponse | null>(null)
+  const [authCode, setAuthCode] = useState('')
   const [token, setToken] = useState<TokenResponse | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  const [polling, setPolling] = useState(false)
   const [mailLoading, setMailLoading] = useState(false)
   const [mails, setMails] = useState<MailItem[]>([])
   const [draftTone, setDraftTone] = useState<DraftTone>('professional')
@@ -222,10 +211,7 @@ function App() {
   const [copiedId, setCopiedId] = useState<string | null>(null)
 
   const canStart = useMemo(() => clientId.trim().length > 10, [clientId])
-
-  const rankedTop5 = useMemo(() => {
-    return mails.map(rankMail).sort((a, b) => b.score - a.score).slice(0, 5)
-  }, [mails])
+  const rankedTop5 = useMemo(() => mails.map(rankMail).sort((a, b) => b.score - a.score).slice(0, 5), [mails])
 
   useEffect(() => {
     const load = async () => {
@@ -234,113 +220,76 @@ function App() {
         try {
           const parsed = JSON.parse(fromKeychain) as TokenResponse
           if (parsed.access_token) setToken(parsed)
-        } catch {
-          // ignore
-        }
-      } else {
-        // dev fallback if running in browser-only mode
-        const saved = localStorage.getItem('mailpilot.gmail.token')
-        if (saved) {
-          try {
-            const parsed = JSON.parse(saved) as TokenResponse
-            if (parsed.access_token) setToken(parsed)
-          } catch {
-            // ignore
-          }
-        }
+        } catch {}
       }
-
       const parsedMails = await mailsLoad()
-      if (parsedMails.length > 0) {
-        setMails(parsedMails)
-      }
+      if (parsedMails.length > 0) setMails(parsedMails)
     }
-
     void load()
   }, [])
 
-  const startDeviceFlow = async () => {
+  const startPkceLogin = async () => {
     setError('')
-    setToken(null)
     setBusy(true)
     try {
-      const body = new URLSearchParams({
+      const verifier = randomString(64)
+      const challenge = await sha256Base64Url(verifier)
+      await keychainSet(KEYCHAIN_PKCE_KEY, verifier)
+
+      const params = new URLSearchParams({
         client_id: clientId.trim(),
+        redirect_uri: REDIRECT_URI,
+        response_type: 'code',
         scope: GMAIL_SCOPE,
+        code_challenge: challenge,
+        code_challenge_method: 'S256',
+        access_type: 'offline',
+        prompt: 'consent',
       })
-      const res = await fetch(GOOGLE_DEVICE_CODE_ENDPOINT, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body,
-      })
-      if (!res.ok) throw new Error(`Device flow failed: ${res.status}`)
-      const data = (await res.json()) as DeviceCodeResponse
-      setDevice(data)
+
+      await openUrl(`${GOOGLE_AUTH_ENDPOINT}?${params.toString()}`)
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to start OAuth')
+      setError(e instanceof Error ? e.message : 'Failed to start PKCE login')
     } finally {
       setBusy(false)
     }
   }
 
-  const pollForToken = async () => {
-    if (!device) return
+  const exchangeCode = async () => {
     setError('')
-    setPolling(true)
-    const started = Date.now()
+    setBusy(true)
+    try {
+      const verifier = await keychainGet(KEYCHAIN_PKCE_KEY)
+      if (!verifier) throw new Error('No PKCE verifier found. Please restart login.')
 
-    while (Date.now() - started < device.expires_in * 1000) {
-      try {
-        const body = new URLSearchParams({
-          client_id: clientId.trim(),
-          device_code: device.device_code,
-          grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
-        })
+      const body = new URLSearchParams({
+        client_id: clientId.trim(),
+        code: authCode.trim(),
+        code_verifier: verifier,
+        grant_type: 'authorization_code',
+        redirect_uri: REDIRECT_URI,
+      })
 
-        const res = await fetch(GOOGLE_TOKEN_ENDPOINT, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body,
-        })
-
-        const payload = await res.json()
-
-        if (res.ok && payload?.access_token) {
-          const data = payload as TokenResponse
-          setToken(data)
-          const raw = JSON.stringify(data)
-          // primary: macOS Keychain via Tauri invoke
-          try {
-            await keychainSet(KEYCHAIN_TOKEN_KEY, raw)
-            localStorage.removeItem('mailpilot.gmail.token')
-          } catch {
-            // fallback for browser/dev mode
-            localStorage.setItem('mailpilot.gmail.token', raw)
-          }
-          setPolling(false)
-          return
-        }
-
-        if (payload?.error === 'authorization_pending') {
-          await new Promise((r) => setTimeout(r, (device.interval || 5) * 1000))
-          continue
-        }
-
-        if (payload?.error === 'slow_down') {
-          await new Promise((r) => setTimeout(r, (device.interval + 3) * 1000))
-          continue
-        }
-
-        throw new Error(payload?.error || 'Token polling failed')
-      } catch (e) {
-        setError(e instanceof Error ? e.message : 'Token polling failed')
-        setPolling(false)
-        return
+      const res = await fetch(GOOGLE_TOKEN_ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body,
+      })
+      const payload = await res.json()
+      if (!res.ok || !payload?.access_token) {
+        throw new Error(payload?.error_description || payload?.error || `Token exchange failed: ${res.status}`)
       }
-    }
 
-    setError('Authorization timed out. Start again.')
-    setPolling(false)
+      const data = payload as TokenResponse
+      setToken(data)
+      await keychainSet(KEYCHAIN_TOKEN_KEY, JSON.stringify(data))
+      await keychainDelete(KEYCHAIN_PKCE_KEY)
+      setAuthCode('')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Code exchange failed')
+    } finally {
+      setBusy(false)
+    }
   }
 
   const fetchMails = async () => {
@@ -348,24 +297,16 @@ function App() {
     setError('')
     setMailLoading(true)
     try {
-      const listRes = await fetch(
-        'https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=20&q=newer_than:7d',
-        {
-          headers: {
-            Authorization: `Bearer ${token.access_token}`,
-          },
-        },
-      )
-
-      if (!listRes.ok) {
-        throw new Error(`Failed to list messages: ${listRes.status}`)
-      }
+      const listRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=20&q=newer_than:7d', {
+        headers: { Authorization: `Bearer ${token.access_token}` },
+      })
+      if (!listRes.ok) throw new Error(`Failed to list messages: ${listRes.status}`)
 
       const listJson = (await listRes.json()) as { messages?: GmailMessageListItem[] }
       const ids = listJson.messages ?? []
       if (ids.length === 0) {
         setMails([])
-        setMailLoading(false)
+        await mailsSave([])
         return
       }
 
@@ -373,33 +314,26 @@ function App() {
         ids.slice(0, 12).map(async (m) => {
           const detailRes = await fetch(
             `https://gmail.googleapis.com/gmail/v1/users/me/messages/${m.id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`,
-            {
-              headers: {
-                Authorization: `Bearer ${token.access_token}`,
-              },
-            },
+            { headers: { Authorization: `Bearer ${token.access_token}` } },
           )
           if (!detailRes.ok) return null
           return (await detailRes.json()) as GmailMessage
         }),
       )
 
-      const parsed: MailItem[] = details
-        .filter((x): x is GmailMessage => Boolean(x))
-        .map((msg) => {
-          const headers = msg.payload?.headers
-          const from = getHeader(headers, 'From')
-          const subject = getHeader(headers, 'Subject') || '(No subject)'
-          const dateRaw = getHeader(headers, 'Date')
-          const date = dateRaw ? new Date(dateRaw).toLocaleString() : ''
-          return {
-            id: msg.id,
-            from,
-            subject,
-            date,
-            snippet: msg.snippet ?? '',
-          }
-        })
+      const parsed: MailItem[] = details.filter((x): x is GmailMessage => Boolean(x)).map((msg) => {
+        const headers = msg.payload?.headers
+        return {
+          id: msg.id,
+          from: getHeader(headers, 'From'),
+          subject: getHeader(headers, 'Subject') || '(No subject)',
+          date: (() => {
+            const d = getHeader(headers, 'Date')
+            return d ? new Date(d).toLocaleString() : ''
+          })(),
+          snippet: msg.snippet ?? '',
+        }
+      })
 
       setMails(parsed)
       await mailsSave(parsed)
@@ -411,19 +345,17 @@ function App() {
   }
 
   const copyDraft = async (mail: RankedMail) => {
-    const draft = generateReplyDraft(mail, draftTone)
-    await navigator.clipboard.writeText(draft)
+    await navigator.clipboard.writeText(generateReplyDraft(mail, draftTone))
     setCopiedId(mail.id)
     setTimeout(() => setCopiedId((current) => (current === mail.id ? null : current)), 1500)
   }
 
   const clearLocalData = async () => {
-    localStorage.removeItem('mailpilot.gmail.token')
     await keychainDelete(KEYCHAIN_TOKEN_KEY)
+    await keychainDelete(KEYCHAIN_PKCE_KEY)
     await mailsClear()
     setToken(null)
     setMails([])
-    setDevice(null)
     setExpandedDraftId(null)
     setCopiedId(null)
     setError('')
@@ -437,49 +369,24 @@ function App() {
       </header>
 
       <section className="card">
-        <h2>Step 1 · Gmail OAuth (Device Flow)</h2>
-        <p className="hint">
-          Paste your Google OAuth <code>client_id</code> (Desktop App), then connect Gmail.
-        </p>
-
+        <h2>Step 1 · Gmail OAuth (PKCE)</h2>
+        <p className="hint">Use Desktop OAuth client_id, then authorize in browser and paste the <code>code</code> from callback URL.</p>
         <div className="row">
-          <input
-            value={clientId}
-            onChange={(e) => setClientId(e.target.value)}
-            placeholder="Google OAuth Client ID"
-          />
-          <button disabled={!canStart || busy} onClick={startDeviceFlow}>
-            {busy ? 'Starting…' : 'Connect Gmail'}
-          </button>
+          <input value={clientId} onChange={(e) => setClientId(e.target.value)} placeholder="Google OAuth Client ID" />
+          <button disabled={!canStart || busy} onClick={startPkceLogin}>{busy ? 'Opening…' : 'Open Google Login'}</button>
         </div>
 
-        {device && (
-          <div className="oauth-box">
-            <p>
-              1) Open:{' '}
-              <a href={device.verification_url} target="_blank" rel="noreferrer">
-                {device.verification_url}
-              </a>
-            </p>
-            <p>
-              2) Enter code: <strong>{device.user_code}</strong>
-            </p>
-            <button disabled={polling} onClick={pollForToken}>
-              {polling ? 'Waiting authorization…' : 'I authorized, continue'}
-            </button>
-          </div>
-        )}
+        <div className="row" style={{ marginTop: 8 }}>
+          <input value={authCode} onChange={(e) => setAuthCode(e.target.value)} placeholder="Paste authorization code from callback URL" />
+          <button disabled={!authCode.trim() || busy} onClick={exchangeCode}>{busy ? 'Exchanging…' : 'Exchange Code'}</button>
+        </div>
 
         {token && (
           <div className="oauth-box">
             <p className="ok">✅ Gmail connected.</p>
             <div className="actions">
-              <button disabled={mailLoading} onClick={fetchMails}>
-                {mailLoading ? 'Syncing…' : 'Fetch recent emails'}
-              </button>
-              <button className="secondary" onClick={clearLocalData}>
-                Disconnect + Wipe Local Data
-              </button>
+              <button disabled={mailLoading} onClick={fetchMails}>{mailLoading ? 'Syncing…' : 'Fetch recent emails'}</button>
+              <button className="secondary" onClick={clearLocalData}>Disconnect + Wipe Local Data</button>
             </div>
           </div>
         )}
@@ -496,36 +403,22 @@ function App() {
           </select>
         </div>
 
-        {rankedTop5.length === 0 ? (
-          <p className="hint">No ranked emails yet.</p>
-        ) : (
+        {rankedTop5.length === 0 ? <p className="hint">No ranked emails yet.</p> : (
           <div className="mail-list">
             {rankedTop5.map((m, idx) => {
               const draft = generateReplyDraft(m, draftTone)
               const expanded = expandedDraftId === m.id
               return (
                 <article key={m.id} className="mail-item">
-                  <h3>
-                    #{idx + 1} · {m.subject}
-                  </h3>
+                  <h3>#{idx + 1} · {m.subject}</h3>
                   <p className="meta">Score: {m.score} · {m.reasons.join(', ') || 'baseline'}</p>
                   <p className="meta">From: {m.from}</p>
                   <p className="meta">建议动作：<strong>{suggestAction(m)}</strong></p>
-                  <ul className="summary-list">
-                    {summarizeSnippet(m.snippet).map((line, i) => (
-                      <li key={i}>{line}</li>
-                    ))}
-                  </ul>
-
+                  <ul className="summary-list">{summarizeSnippet(m.snippet).map((line, i) => <li key={i}>{line}</li>)}</ul>
                   <div className="actions">
-                    <button onClick={() => setExpandedDraftId(expanded ? null : m.id)}>
-                      {expanded ? '隐藏草稿' : '生成草稿'}
-                    </button>
-                    <button onClick={() => copyDraft(m)}>
-                      {copiedId === m.id ? '已复制' : '复制草稿'}
-                    </button>
+                    <button onClick={() => setExpandedDraftId(expanded ? null : m.id)}>{expanded ? '隐藏草稿' : '生成草稿'}</button>
+                    <button onClick={() => copyDraft(m)}>{copiedId === m.id ? '已复制' : '复制草稿'}</button>
                   </div>
-
                   {expanded && <textarea className="draft" value={draft} readOnly rows={7} />}
                 </article>
               )
@@ -536,9 +429,7 @@ function App() {
 
       <section className="card">
         <h2>Recent Emails (last 7 days)</h2>
-        {mails.length === 0 ? (
-          <p className="hint">No emails loaded yet.</p>
-        ) : (
+        {mails.length === 0 ? <p className="hint">No emails loaded yet.</p> : (
           <div className="mail-list">
             {mails.map((m) => (
               <article key={m.id} className="mail-item">
@@ -550,17 +441,6 @@ function App() {
             ))}
           </div>
         )}
-      </section>
-
-      <section className="card">
-        <h2>MVP Scope</h2>
-        <ul>
-          <li>Gmail read-only integration</li>
-          <li>Top 5 important emails</li>
-          <li>3-line summary and recommended action</li>
-          <li>Reply draft (copy to clipboard)</li>
-          <li>Local storage + one-click data wipe</li>
-        </ul>
       </section>
 
       <section className="card">
