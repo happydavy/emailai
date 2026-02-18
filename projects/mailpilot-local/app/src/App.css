@@ -23,6 +23,11 @@ h1 {
   font-size: 2rem;
 }
 
+h3 {
+  margin: 0 0 4px;
+  font-size: 1rem;
+}
+
 .subtitle {
   margin-top: 8px;
   color: #6b7280;
@@ -89,6 +94,25 @@ button:disabled {
 .err {
   color: #991b1b;
   margin-top: 10px;
+}
+
+.mail-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mail-item {
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 10px;
+  background: #fcfcfd;
+}
+
+.meta {
+  margin: 0 0 2px;
+  color: #6b7280;
+  font-size: 12px;
 }
 
 ul {

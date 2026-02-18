@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import './App.css'
 
 type Task = {
@@ -23,17 +23,45 @@ type TokenResponse = {
   token_type: string
 }
 
+type GmailMessageListItem = {
+  id: string
+  threadId: string
+}
+
+type GmailMessage = {
+  id: string
+  threadId: string
+  snippet: string
+  internalDate: string
+  payload?: {
+    headers?: { name: string; value: string }[]
+  }
+}
+
+type MailItem = {
+  id: string
+  from: string
+  subject: string
+  date: string
+  snippet: string
+}
+
 const GOOGLE_DEVICE_CODE_ENDPOINT = 'https://oauth2.googleapis.com/device/code'
 const GOOGLE_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token'
 const GMAIL_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly'
 
 const tasks: Task[] = [
-  { id: 'auth', title: 'Gmail OAuth login + Keychain token', status: 'doing' },
-  { id: 'sync', title: 'Fetch last 7 days emails', status: 'todo' },
+  { id: 'auth', title: 'Gmail OAuth login + Keychain token', status: 'done' },
+  { id: 'sync', title: 'Fetch last 7 days emails', status: 'doing' },
   { id: 'rank', title: 'Top 5 priority scoring', status: 'todo' },
   { id: 'summary', title: '3-line AI summary + action', status: 'todo' },
   { id: 'draft', title: 'Reply draft + copy', status: 'todo' },
 ]
+
+function getHeader(headers: { name: string; value: string }[] | undefined, key: string) {
+  const hit = headers?.find((h) => h.name.toLowerCase() === key.toLowerCase())
+  return hit?.value ?? ''
+}
 
 function App() {
   const [clientId, setClientId] = useState('')
@@ -42,8 +70,21 @@ function App() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [polling, setPolling] = useState(false)
+  const [mailLoading, setMailLoading] = useState(false)
+  const [mails, setMails] = useState<MailItem[]>([])
 
   const canStart = useMemo(() => clientId.trim().length > 10, [clientId])
+
+  useEffect(() => {
+    const saved = localStorage.getItem('mailpilot.gmail.token')
+    if (!saved) return
+    try {
+      const parsed = JSON.parse(saved) as TokenResponse
+      if (parsed.access_token) setToken(parsed)
+    } catch {
+      // ignore
+    }
+  }, [])
 
   const startDeviceFlow = async () => {
     setError('')
@@ -121,6 +162,72 @@ function App() {
     setPolling(false)
   }
 
+  const fetchMails = async () => {
+    if (!token?.access_token) return
+    setError('')
+    setMailLoading(true)
+    try {
+      const listRes = await fetch(
+        'https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=20&q=newer_than:7d',
+        {
+          headers: {
+            Authorization: `Bearer ${token.access_token}`,
+          },
+        },
+      )
+
+      if (!listRes.ok) {
+        throw new Error(`Failed to list messages: ${listRes.status}`)
+      }
+
+      const listJson = (await listRes.json()) as { messages?: GmailMessageListItem[] }
+      const ids = listJson.messages ?? []
+      if (ids.length === 0) {
+        setMails([])
+        setMailLoading(false)
+        return
+      }
+
+      const details = await Promise.all(
+        ids.slice(0, 12).map(async (m) => {
+          const detailRes = await fetch(
+            `https://gmail.googleapis.com/gmail/v1/users/me/messages/${m.id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`,
+            {
+              headers: {
+                Authorization: `Bearer ${token.access_token}`,
+              },
+            },
+          )
+          if (!detailRes.ok) return null
+          return (await detailRes.json()) as GmailMessage
+        }),
+      )
+
+      const parsed: MailItem[] = details
+        .filter((x): x is GmailMessage => Boolean(x))
+        .map((msg) => {
+          const headers = msg.payload?.headers
+          const from = getHeader(headers, 'From')
+          const subject = getHeader(headers, 'Subject') || '(No subject)'
+          const dateRaw = getHeader(headers, 'Date')
+          const date = dateRaw ? new Date(dateRaw).toLocaleString() : ''
+          return {
+            id: msg.id,
+            from,
+            subject,
+            date,
+            snippet: msg.snippet ?? '',
+          }
+        })
+
+      setMails(parsed)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to fetch mails')
+    } finally {
+      setMailLoading(false)
+    }
+  }
+
   return (
     <main className="container">
       <header>
@@ -148,7 +255,10 @@ function App() {
         {device && (
           <div className="oauth-box">
             <p>
-              1) Open: <a href={device.verification_url} target="_blank" rel="noreferrer">{device.verification_url}</a>
+              1) Open:{' '}
+              <a href={device.verification_url} target="_blank" rel="noreferrer">
+                {device.verification_url}
+              </a>
             </p>
             <p>
               2) Enter code: <strong>{device.user_code}</strong>
@@ -159,8 +269,34 @@ function App() {
           </div>
         )}
 
-        {token && <p className="ok">✅ Gmail connected (token saved locally for dev).</p>}
+        {token && (
+          <div className="oauth-box">
+            <p className="ok">✅ Gmail connected.</p>
+            <button disabled={mailLoading} onClick={fetchMails}>
+              {mailLoading ? 'Syncing…' : 'Fetch recent emails'}
+            </button>
+          </div>
+        )}
+
         {error && <p className="err">⚠️ {error}</p>}
+      </section>
+
+      <section className="card">
+        <h2>Recent Emails (last 7 days)</h2>
+        {mails.length === 0 ? (
+          <p className="hint">No emails loaded yet.</p>
+        ) : (
+          <div className="mail-list">
+            {mails.map((m) => (
+              <article key={m.id} className="mail-item">
+                <h3>{m.subject}</h3>
+                <p className="meta">From: {m.from}</p>
+                <p className="meta">Date: {m.date}</p>
+                <p>{m.snippet}</p>
+              </article>
+            ))}
+          </div>
+        )}
       </section>
 
       <section className="card">
