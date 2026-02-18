@@ -56,6 +56,11 @@ h2 {
   gap: 10px;
 }
 
+.row.between {
+  justify-content: space-between;
+  align-items: center;
+}
+
 input {
   flex: 1;
   border: 1px solid #d1d5db;
@@ -71,6 +76,13 @@ button {
   background: #111827;
   color: white;
   cursor: pointer;
+}
+
+select {
+  border: 1px solid #d1d5db;
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: white;
 }
 
 button:disabled {
@@ -122,6 +134,22 @@ button:disabled {
 
 .summary-list li {
   margin-bottom: 4px;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.draft {
+  width: 100%;
+  margin-top: 8px;
+  border: 1px solid #d1d5db;
+  border-radius: 10px;
+  padding: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-size: 12px;
 }
 
 ul {

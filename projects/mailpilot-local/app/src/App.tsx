@@ -51,6 +51,8 @@ type RankedMail = MailItem & {
   reasons: string[]
 }
 
+type DraftTone = 'professional' | 'friendly'
+
 const GOOGLE_DEVICE_CODE_ENDPOINT = 'https://oauth2.googleapis.com/device/code'
 const GOOGLE_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token'
 const GMAIL_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly'
@@ -134,6 +136,15 @@ function suggestAction(mail: RankedMail) {
   return '稍后'
 }
 
+function generateReplyDraft(mail: RankedMail, tone: DraftTone) {
+  const summary = summarizeSnippet(mail.snippet)
+  if (tone === 'friendly') {
+    return `Hi,\n\nThanks for your email about "${mail.subject}".\n\nI reviewed this and my quick response is:\n- ${summary[0] || 'Got it.'}\n- ${summary[1] || 'I will follow up shortly.'}\n\nBest,\nDavy`
+  }
+
+  return `Hello,\n\nThank you for your message regarding "${mail.subject}".\n\nMy preliminary response:\n- ${summary[0] || 'Acknowledged.'}\n- ${summary[1] || 'I will review and follow up.'}\n\nRegards,\nDavy`
+}
+
 function App() {
   const [clientId, setClientId] = useState('')
   const [device, setDevice] = useState<DeviceCodeResponse | null>(null)
@@ -143,6 +154,9 @@ function App() {
   const [polling, setPolling] = useState(false)
   const [mailLoading, setMailLoading] = useState(false)
   const [mails, setMails] = useState<MailItem[]>([])
+  const [draftTone, setDraftTone] = useState<DraftTone>('professional')
+  const [expandedDraftId, setExpandedDraftId] = useState<string | null>(null)
+  const [copiedId, setCopiedId] = useState<string | null>(null)
 
   const canStart = useMemo(() => clientId.trim().length > 10, [clientId])
 
@@ -303,6 +317,13 @@ function App() {
     }
   }
 
+  const copyDraft = async (mail: RankedMail) => {
+    const draft = generateReplyDraft(mail, draftTone)
+    await navigator.clipboard.writeText(draft)
+    setCopiedId(mail.id)
+    setTimeout(() => setCopiedId((current) => (current === mail.id ? null : current)), 1500)
+  }
+
   return (
     <main className="container">
       <header>
@@ -357,26 +378,48 @@ function App() {
       </section>
 
       <section className="card">
-        <h2>Top 5 Priority Emails</h2>
+        <div className="row between">
+          <h2>Top 5 Priority Emails</h2>
+          <select value={draftTone} onChange={(e) => setDraftTone(e.target.value as DraftTone)}>
+            <option value="professional">草稿语气：专业</option>
+            <option value="friendly">草稿语气：友好</option>
+          </select>
+        </div>
+
         {rankedTop5.length === 0 ? (
           <p className="hint">No ranked emails yet.</p>
         ) : (
           <div className="mail-list">
-            {rankedTop5.map((m, idx) => (
-              <article key={m.id} className="mail-item">
-                <h3>
-                  #{idx + 1} · {m.subject}
-                </h3>
-                <p className="meta">Score: {m.score} · {m.reasons.join(', ') || 'baseline'}</p>
-                <p className="meta">From: {m.from}</p>
-                <p className="meta">建议动作：<strong>{suggestAction(m)}</strong></p>
-                <ul className="summary-list">
-                  {summarizeSnippet(m.snippet).map((line, i) => (
-                    <li key={i}>{line}</li>
-                  ))}
-                </ul>
-              </article>
-            ))}
+            {rankedTop5.map((m, idx) => {
+              const draft = generateReplyDraft(m, draftTone)
+              const expanded = expandedDraftId === m.id
+              return (
+                <article key={m.id} className="mail-item">
+                  <h3>
+                    #{idx + 1} · {m.subject}
+                  </h3>
+                  <p className="meta">Score: {m.score} · {m.reasons.join(', ') || 'baseline'}</p>
+                  <p className="meta">From: {m.from}</p>
+                  <p className="meta">建议动作：<strong>{suggestAction(m)}</strong></p>
+                  <ul className="summary-list">
+                    {summarizeSnippet(m.snippet).map((line, i) => (
+                      <li key={i}>{line}</li>
+                    ))}
+                  </ul>
+
+                  <div className="actions">
+                    <button onClick={() => setExpandedDraftId(expanded ? null : m.id)}>
+                      {expanded ? '隐藏草稿' : '生成草稿'}
+                    </button>
+                    <button onClick={() => copyDraft(m)}>
+                      {copiedId === m.id ? '已复制' : '复制草稿'}
+                    </button>
+                  </div>
+
+                  {expanded && <textarea className="draft" value={draft} readOnly rows={7} />}
+                </article>
+              )
+            })}
           </div>
         )}
       </section>
