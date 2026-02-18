@@ -58,8 +58,8 @@ const GMAIL_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly'
 const tasks: Task[] = [
   { id: 'auth', title: 'Gmail OAuth login + Keychain token', status: 'done' },
   { id: 'sync', title: 'Fetch last 7 days emails', status: 'done' },
-  { id: 'rank', title: 'Top 5 priority scoring', status: 'doing' },
-  { id: 'summary', title: '3-line AI summary + action', status: 'todo' },
+  { id: 'rank', title: 'Top 5 priority scoring', status: 'done' },
+  { id: 'summary', title: '3-line AI summary + action', status: 'doing' },
   { id: 'draft', title: 'Reply draft + copy', status: 'todo' },
 ]
 
@@ -106,6 +106,32 @@ function rankMail(item: MailItem): RankedMail {
   }
 
   return { ...item, score, reasons }
+}
+
+function summarizeSnippet(text: string) {
+  const clean = text.replace(/\s+/g, ' ').trim()
+  if (!clean) return ['No content available.', '', '']
+
+  const chunks = clean.match(/[^.!?。！？]{20,120}[.!?。！？]?/g) || [clean]
+  const line1 = chunks[0] || clean.slice(0, 90)
+  const line2 = chunks[1] || clean.slice(90, 180)
+  const line3 = chunks[2] || clean.slice(180, 270)
+
+  return [line1, line2, line3].map((x) => (x || '').trim()).filter(Boolean)
+}
+
+function suggestAction(mail: RankedMail) {
+  const text = `${mail.subject} ${mail.snippet}`.toLowerCase()
+  if (mail.score >= 2 || text.includes('reply') || text.includes('confirm') || text.includes('approve')) {
+    return '回复'
+  }
+  if (text.includes('meeting') || text.includes('schedule') || text.includes('tomorrow') || text.includes('today')) {
+    return '稍后'
+  }
+  if (mail.score <= -1) {
+    return '归档'
+  }
+  return '稍后'
 }
 
 function App() {
@@ -343,7 +369,12 @@ function App() {
                 </h3>
                 <p className="meta">Score: {m.score} · {m.reasons.join(', ') || 'baseline'}</p>
                 <p className="meta">From: {m.from}</p>
-                <p>{m.snippet}</p>
+                <p className="meta">建议动作：<strong>{suggestAction(m)}</strong></p>
+                <ul className="summary-list">
+                  {summarizeSnippet(m.snippet).map((line, i) => (
+                    <li key={i}>{line}</li>
+                  ))}
+                </ul>
               </article>
             ))}
           </div>
