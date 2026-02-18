@@ -41,6 +41,56 @@ h2 {
   font-size: 1.1rem;
 }
 
+.hint {
+  margin: 0 0 10px;
+  color: #4b5563;
+}
+
+.row {
+  display: flex;
+  gap: 10px;
+}
+
+input {
+  flex: 1;
+  border: 1px solid #d1d5db;
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 14px;
+}
+
+button {
+  border: 0;
+  border-radius: 10px;
+  padding: 10px 14px;
+  background: #111827;
+  color: white;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.oauth-box {
+  margin-top: 12px;
+  border: 1px dashed #9ca3af;
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: #f9fafb;
+}
+
+.ok {
+  color: #065f46;
+  margin-top: 10px;
+}
+
+.err {
+  color: #991b1b;
+  margin-top: 10px;
+}
+
 ul {
   margin: 0;
   padding-left: 18px;
