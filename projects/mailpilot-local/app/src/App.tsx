@@ -46,21 +46,66 @@ type MailItem = {
   snippet: string
 }
 
+type RankedMail = MailItem & {
+  score: number
+  reasons: string[]
+}
+
 const GOOGLE_DEVICE_CODE_ENDPOINT = 'https://oauth2.googleapis.com/device/code'
 const GOOGLE_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token'
 const GMAIL_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly'
 
 const tasks: Task[] = [
   { id: 'auth', title: 'Gmail OAuth login + Keychain token', status: 'done' },
-  { id: 'sync', title: 'Fetch last 7 days emails', status: 'doing' },
-  { id: 'rank', title: 'Top 5 priority scoring', status: 'todo' },
+  { id: 'sync', title: 'Fetch last 7 days emails', status: 'done' },
+  { id: 'rank', title: 'Top 5 priority scoring', status: 'doing' },
   { id: 'summary', title: '3-line AI summary + action', status: 'todo' },
   { id: 'draft', title: 'Reply draft + copy', status: 'todo' },
 ]
 
+const PRIORITY_KEYWORDS = ['urgent', 'asap', 'action required', 'deadline', 'follow up', 'payment', 'invoice', 'meeting']
+const LOW_PRIORITY_HINTS = ['newsletter', 'unsubscribe', 'promotion', 'sale', 'digest']
+
 function getHeader(headers: { name: string; value: string }[] | undefined, key: string) {
   const hit = headers?.find((h) => h.name.toLowerCase() === key.toLowerCase())
   return hit?.value ?? ''
+}
+
+function rankMail(item: MailItem): RankedMail {
+  let score = 0
+  const reasons: string[] = []
+
+  const subjectLower = item.subject.toLowerCase()
+  const fromLower = item.from.toLowerCase()
+  const snippetLower = item.snippet.toLowerCase()
+
+  for (const kw of PRIORITY_KEYWORDS) {
+    if (subjectLower.includes(kw) || snippetLower.includes(kw)) {
+      score += 2
+      reasons.push(`keyword:${kw}`)
+      break
+    }
+  }
+
+  if (fromLower.includes('@gmail.com') || fromLower.includes('@qq.com')) {
+    score += 1
+    reasons.push('personal-sender')
+  }
+
+  if (subjectLower.startsWith('re:')) {
+    score += 1
+    reasons.push('active-thread')
+  }
+
+  for (const hint of LOW_PRIORITY_HINTS) {
+    if (subjectLower.includes(hint) || snippetLower.includes(hint)) {
+      score -= 2
+      reasons.push(`low:${hint}`)
+      break
+    }
+  }
+
+  return { ...item, score, reasons }
 }
 
 function App() {
@@ -74,6 +119,10 @@ function App() {
   const [mails, setMails] = useState<MailItem[]>([])
 
   const canStart = useMemo(() => clientId.trim().length > 10, [clientId])
+
+  const rankedTop5 = useMemo(() => {
+    return mails.map(rankMail).sort((a, b) => b.score - a.score).slice(0, 5)
+  }, [mails])
 
   useEffect(() => {
     const saved = localStorage.getItem('mailpilot.gmail.token')
@@ -279,6 +328,26 @@ function App() {
         )}
 
         {error && <p className="err">⚠️ {error}</p>}
+      </section>
+
+      <section className="card">
+        <h2>Top 5 Priority Emails</h2>
+        {rankedTop5.length === 0 ? (
+          <p className="hint">No ranked emails yet.</p>
+        ) : (
+          <div className="mail-list">
+            {rankedTop5.map((m, idx) => (
+              <article key={m.id} className="mail-item">
+                <h3>
+                  #{idx + 1} · {m.subject}
+                </h3>
+                <p className="meta">Score: {m.score} · {m.reasons.join(', ') || 'baseline'}</p>
+                <p className="meta">From: {m.from}</p>
+                <p>{m.snippet}</p>
+              </article>
+            ))}
+          </div>
+        )}
       </section>
 
       <section className="card">
