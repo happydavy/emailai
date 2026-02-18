@@ -52,6 +52,7 @@ const GOOGLE_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token'
 const GOOGLE_AUTH_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth'
 const GMAIL_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly'
 const REDIRECT_URI = 'http://127.0.0.1:8765/callback'
+const GOOGLE_CLIENT_ID = (import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined)?.trim() || ''
 
 const KEYCHAIN_TOKEN_KEY = 'gmail_token'
 const KEYCHAIN_PKCE_KEY = 'gmail_pkce_verifier'
@@ -199,7 +200,6 @@ function generateReplyDraft(mail: RankedMail, tone: DraftTone) {
 }
 
 function App() {
-  const [clientId, setClientId] = useState('')
   const [authCode, setAuthCode] = useState('')
   const [token, setToken] = useState<TokenResponse | null>(null)
   const [busy, setBusy] = useState(false)
@@ -210,7 +210,7 @@ function App() {
   const [expandedDraftId, setExpandedDraftId] = useState<string | null>(null)
   const [copiedId, setCopiedId] = useState<string | null>(null)
 
-  const canStart = useMemo(() => clientId.trim().length > 10, [clientId])
+  const canStart = useMemo(() => GOOGLE_CLIENT_ID.length > 10, [])
   const rankedTop5 = useMemo(() => mails.map(rankMail).sort((a, b) => b.score - a.score).slice(0, 5), [mails])
 
   useEffect(() => {
@@ -237,7 +237,7 @@ function App() {
       await keychainSet(KEYCHAIN_PKCE_KEY, verifier)
 
       const params = new URLSearchParams({
-        client_id: clientId.trim(),
+        client_id: GOOGLE_CLIENT_ID,
         redirect_uri: REDIRECT_URI,
         response_type: 'code',
         scope: GMAIL_SCOPE,
@@ -263,7 +263,7 @@ function App() {
       if (!verifier) throw new Error('No PKCE verifier found. Please restart login.')
 
       const body = new URLSearchParams({
-        client_id: clientId.trim(),
+        client_id: GOOGLE_CLIENT_ID,
         code: authCode.trim(),
         code_verifier: verifier,
         grant_type: 'authorization_code',
@@ -372,9 +372,9 @@ function App() {
         <h2>Gmail 登录（浏览器授权）</h2>
         <p className="hint">用户点击“使用 Gmail 登录”后会自动跳转浏览器授权；授权完成后把回调 URL 里的 <code>code</code> 粘贴回来完成登录。</p>
         <div className="row">
-          <input value={clientId} onChange={(e) => setClientId(e.target.value)} placeholder="Google OAuth Client ID" />
           <button disabled={!canStart || busy} onClick={startPkceLogin}>{busy ? '跳转中…' : '使用 Gmail 登录'}</button>
         </div>
+        {!canStart && <p className="err">⚠️ 应用未配置 Google OAuth client_id（VITE_GOOGLE_CLIENT_ID）。</p>}
 
         <div className="row" style={{ marginTop: 8 }}>
           <input value={authCode} onChange={(e) => setAuthCode(e.target.value)} placeholder="粘贴回调 URL 中的 code" />
