@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { invoke } from '@tauri-apps/api/core'
 import './App.css'
 
 type Task = {
@@ -67,6 +68,28 @@ const tasks: Task[] = [
 
 const PRIORITY_KEYWORDS = ['urgent', 'asap', 'action required', 'deadline', 'follow up', 'payment', 'invoice', 'meeting']
 const LOW_PRIORITY_HINTS = ['newsletter', 'unsubscribe', 'promotion', 'sale', 'digest']
+const KEYCHAIN_TOKEN_KEY = 'gmail_token'
+
+async function keychainSet(key: string, value: string) {
+  await invoke('keychain_set', { key, value })
+}
+
+async function keychainGet(key: string): Promise<string | null> {
+  try {
+    const value = await invoke<string>('keychain_get', { key })
+    return value
+  } catch {
+    return null
+  }
+}
+
+async function keychainDelete(key: string) {
+  try {
+    await invoke('keychain_delete', { key })
+  } catch {
+    // ignore
+  }
+}
 
 function getHeader(headers: { name: string; value: string }[] | undefined, key: string) {
   const hit = headers?.find((h) => h.name.toLowerCase() === key.toLowerCase())
@@ -165,26 +188,41 @@ function App() {
   }, [mails])
 
   useEffect(() => {
-    const saved = localStorage.getItem('mailpilot.gmail.token')
-    const savedMails = localStorage.getItem('mailpilot.gmail.mails')
+    const load = async () => {
+      const savedMails = localStorage.getItem('mailpilot.gmail.mails')
 
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved) as TokenResponse
-        if (parsed.access_token) setToken(parsed)
-      } catch {
-        // ignore
+      const fromKeychain = await keychainGet(KEYCHAIN_TOKEN_KEY)
+      if (fromKeychain) {
+        try {
+          const parsed = JSON.parse(fromKeychain) as TokenResponse
+          if (parsed.access_token) setToken(parsed)
+        } catch {
+          // ignore
+        }
+      } else {
+        // dev fallback if running in browser-only mode
+        const saved = localStorage.getItem('mailpilot.gmail.token')
+        if (saved) {
+          try {
+            const parsed = JSON.parse(saved) as TokenResponse
+            if (parsed.access_token) setToken(parsed)
+          } catch {
+            // ignore
+          }
+        }
+      }
+
+      if (savedMails) {
+        try {
+          const parsedMails = JSON.parse(savedMails) as MailItem[]
+          if (Array.isArray(parsedMails)) setMails(parsedMails)
+        } catch {
+          // ignore
+        }
       }
     }
 
-    if (savedMails) {
-      try {
-        const parsedMails = JSON.parse(savedMails) as MailItem[]
-        if (Array.isArray(parsedMails)) setMails(parsedMails)
-      } catch {
-        // ignore
-      }
-    }
+    void load()
   }, [])
 
   const startDeviceFlow = async () => {
@@ -236,7 +274,15 @@ function App() {
         if (res.ok && payload?.access_token) {
           const data = payload as TokenResponse
           setToken(data)
-          localStorage.setItem('mailpilot.gmail.token', JSON.stringify(data))
+          const raw = JSON.stringify(data)
+          // primary: macOS Keychain via Tauri invoke
+          try {
+            await keychainSet(KEYCHAIN_TOKEN_KEY, raw)
+            localStorage.removeItem('mailpilot.gmail.token')
+          } catch {
+            // fallback for browser/dev mode
+            localStorage.setItem('mailpilot.gmail.token', raw)
+          }
           setPolling(false)
           return
         }
@@ -337,9 +383,10 @@ function App() {
     setTimeout(() => setCopiedId((current) => (current === mail.id ? null : current)), 1500)
   }
 
-  const clearLocalData = () => {
+  const clearLocalData = async () => {
     localStorage.removeItem('mailpilot.gmail.token')
     localStorage.removeItem('mailpilot.gmail.mails')
+    await keychainDelete(KEYCHAIN_TOKEN_KEY)
     setToken(null)
     setMails([])
     setDevice(null)
