@@ -6,6 +6,7 @@
 - Pronouns: he/him
 - Timezone: America/Los_Angeles (Pacific)
 - Role: CEO of GoodVision Inc.
+- Daughter: Allie
 
 ## Assistant Identity
 - Name: Davy-assist
