@@ -202,6 +202,7 @@ function generateReplyDraft(mail: RankedMail, tone: DraftTone) {
 function App() {
   const [authCode, setAuthCode] = useState('')
   const [waitingCallback, setWaitingCallback] = useState(false)
+  const [pkceVerifier, setPkceVerifier] = useState('')
   const [token, setToken] = useState<TokenResponse | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -230,7 +231,11 @@ function App() {
   }, [])
 
   const exchangeCodeValue = async (codeValue: string) => {
-    const verifier = await keychainGet(KEYCHAIN_PKCE_KEY)
+    const verifier =
+      (await keychainGet(KEYCHAIN_PKCE_KEY)) ||
+      pkceVerifier ||
+      localStorage.getItem('mailpilot.pkce_verifier') ||
+      ''
     if (!verifier) throw new Error('No PKCE verifier found. Please restart login.')
 
     const body = new URLSearchParams({
@@ -255,6 +260,8 @@ function App() {
     setToken(data)
     await keychainSet(KEYCHAIN_TOKEN_KEY, JSON.stringify(data))
     await keychainDelete(KEYCHAIN_PKCE_KEY)
+    localStorage.removeItem('mailpilot.pkce_verifier')
+    setPkceVerifier('')
     setAuthCode('')
   }
 
@@ -264,7 +271,13 @@ function App() {
     try {
       const verifier = randomString(64)
       const challenge = await sha256Base64Url(verifier)
-      await keychainSet(KEYCHAIN_PKCE_KEY, verifier)
+      setPkceVerifier(verifier)
+      localStorage.setItem('mailpilot.pkce_verifier', verifier)
+      try {
+        await keychainSet(KEYCHAIN_PKCE_KEY, verifier)
+      } catch {
+        // fallback to in-memory/local storage only
+      }
 
       const params = new URLSearchParams({
         client_id: GOOGLE_CLIENT_ID,
@@ -375,9 +388,11 @@ function App() {
   const clearLocalData = async () => {
     await keychainDelete(KEYCHAIN_TOKEN_KEY)
     await keychainDelete(KEYCHAIN_PKCE_KEY)
+    localStorage.removeItem('mailpilot.pkce_verifier')
     await mailsClear()
     setToken(null)
     setMails([])
+    setPkceVerifier('')
     setExpandedDraftId(null)
     setCopiedId(null)
     setError('')
