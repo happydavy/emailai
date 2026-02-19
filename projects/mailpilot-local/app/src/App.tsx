@@ -278,9 +278,10 @@ function App() {
       })
 
       setWaitingCallback(true)
-      const waitCodePromise = invoke<string>('oauth_wait_code', { timeoutSecs: 180 })
+      // Important: open browser first, then start callback listener.
+      // If listener invoke is started first, it can block subsequent invoke calls on some runtimes.
       await openUrl(`${GOOGLE_AUTH_ENDPOINT}?${params.toString()}`)
-      const callbackCode = await waitCodePromise
+      const callbackCode = await invoke<string>('oauth_wait_code', { timeoutSecs: 180 })
       await exchangeCodeValue(callbackCode)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to complete browser login')
