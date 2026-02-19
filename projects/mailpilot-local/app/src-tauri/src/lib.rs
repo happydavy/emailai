@@ -3,6 +3,7 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::net::TcpListener;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const KEYCHAIN_SERVICE: &str = "mailpilot-local";
@@ -15,6 +16,15 @@ struct MailItem {
     date: String,
     snippet: String,
 }
+
+#[derive(Default)]
+struct OAuthState {
+    code: Option<String>,
+    error: Option<String>,
+    running: bool,
+}
+
+type SharedOAuthState = Arc<Mutex<OAuthState>>;
 
 fn db_path() -> Result<std::path::PathBuf, String> {
     let home = std::env::var("HOME").map_err(|e| e.to_string())?;
@@ -108,9 +118,7 @@ fn mails_load(limit: Option<i64>) -> Result<Vec<MailItem>, String> {
     with_db(|conn| {
         let lim = limit.unwrap_or(50).max(1);
         let mut stmt = conn
-            .prepare(
-                "SELECT id, sender, subject, date, snippet FROM mails ORDER BY updated_at DESC LIMIT ?1",
-            )
+            .prepare("SELECT id, sender, subject, date, snippet FROM mails ORDER BY updated_at DESC LIMIT ?1")
             .map_err(|e| e.to_string())?;
 
         let rows = stmt
@@ -142,70 +150,111 @@ fn mails_clear() -> Result<(), String> {
 }
 
 #[tauri::command]
-fn oauth_wait_code(timeout_secs: Option<u64>) -> Result<String, String> {
-    let timeout = Duration::from_secs(timeout_secs.unwrap_or(180).max(30));
-    let listener = TcpListener::bind("127.0.0.1:8765").map_err(|e| e.to_string())?;
-    listener
-        .set_nonblocking(true)
-        .map_err(|e| e.to_string())?;
-
-    let start = Instant::now();
-    while start.elapsed() < timeout {
-        match listener.accept() {
-            Ok((mut stream, _addr)) => {
-                let mut buffer = [0u8; 4096];
-                let n = stream.read(&mut buffer).map_err(|e| e.to_string())?;
-                let req = String::from_utf8_lossy(&buffer[..n]);
-                let first_line = req.lines().next().unwrap_or_default();
-
-                let mut code = String::new();
-                if let Some(path_start) = first_line.split_whitespace().nth(1) {
-                    if let Some(query) = path_start.split('?').nth(1) {
-                        for pair in query.split('&') {
-                            let mut it = pair.splitn(2, '=');
-                            let k = it.next().unwrap_or_default();
-                            let v = it.next().unwrap_or_default();
-                            if k == "code" {
-                                code = urlencoding::decode(v)
-                                    .map_err(|e| e.to_string())?
-                                    .to_string();
-                                break;
-                            }
-                        }
-                    }
-                }
-
-                let body = if code.is_empty() {
-                    "<html><body><h3>Login failed: missing code.</h3></body></html>"
-                } else {
-                    "<html><body><h3>Login successful. You can return to MailPilot now.</h3></body></html>"
-                };
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    body.len(),
-                    body
-                );
-                let _ = stream.write_all(response.as_bytes());
-                let _ = stream.flush();
-
-                if code.is_empty() {
-                    return Err("Missing OAuth code in callback URL".to_string());
-                }
-                return Ok(code);
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::sleep(Duration::from_millis(120));
-            }
-            Err(e) => return Err(e.to_string()),
+fn oauth_start_listener(state: tauri::State<SharedOAuthState>, timeout_secs: Option<u64>) -> Result<(), String> {
+    {
+        let mut s = state.lock().map_err(|e| e.to_string())?;
+        if s.running {
+            return Ok(());
         }
+        s.code = None;
+        s.error = None;
+        s.running = true;
     }
 
-    Err("Timed out waiting for OAuth callback".to_string())
+    let state_arc = state.inner().clone();
+    let timeout = Duration::from_secs(timeout_secs.unwrap_or(180).max(30));
+
+    std::thread::spawn(move || {
+        let result = (|| -> Result<String, String> {
+            let listener = TcpListener::bind("127.0.0.1:8765").map_err(|e| e.to_string())?;
+            listener.set_nonblocking(true).map_err(|e| e.to_string())?;
+            let start = Instant::now();
+
+            while start.elapsed() < timeout {
+                match listener.accept() {
+                    Ok((mut stream, _addr)) => {
+                        let mut buffer = [0u8; 4096];
+                        let n = stream.read(&mut buffer).map_err(|e| e.to_string())?;
+                        let req = String::from_utf8_lossy(&buffer[..n]);
+                        let first_line = req.lines().next().unwrap_or_default();
+
+                        let mut code = String::new();
+                        if let Some(path_start) = first_line.split_whitespace().nth(1) {
+                            if let Some(query) = path_start.split('?').nth(1) {
+                                for pair in query.split('&') {
+                                    let mut it = pair.splitn(2, '=');
+                                    let k = it.next().unwrap_or_default();
+                                    let v = it.next().unwrap_or_default();
+                                    if k == "code" {
+                                        code = urlencoding::decode(v).map_err(|e| e.to_string())?.to_string();
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        let body = if code.is_empty() {
+                            "<html><body><h3>Login failed: missing code.</h3></body></html>"
+                        } else {
+                            "<html><body><h3>Login successful. You can return to MailPilot now.</h3></body></html>"
+                        };
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        );
+                        let _ = stream.write_all(response.as_bytes());
+                        let _ = stream.flush();
+
+                        if code.is_empty() {
+                            return Err("Missing OAuth code in callback URL".to_string());
+                        }
+                        return Ok(code);
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(120));
+                    }
+                    Err(e) => return Err(e.to_string()),
+                }
+            }
+            Err("Timed out waiting for OAuth callback".to_string())
+        })();
+
+        if let Ok(mut s) = state_arc.lock() {
+            s.running = false;
+            match result {
+                Ok(code) => s.code = Some(code),
+                Err(err) => s.error = Some(err),
+            }
+        }
+    });
+
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct OAuthPollResult {
+    running: bool,
+    code: Option<String>,
+    error: Option<String>,
+}
+
+#[tauri::command]
+fn oauth_poll_result(state: tauri::State<SharedOAuthState>) -> Result<OAuthPollResult, String> {
+    let mut s = state.lock().map_err(|e| e.to_string())?;
+    let code = s.code.take();
+    let error = s.error.take();
+    Ok(OAuthPollResult {
+        running: s.running,
+        code,
+        error,
+    })
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(Arc::new(Mutex::new(OAuthState::default())))
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             keychain_set,
@@ -214,7 +263,8 @@ pub fn run() {
             mails_save,
             mails_load,
             mails_clear,
-            oauth_wait_code
+            oauth_start_listener,
+            oauth_poll_result
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

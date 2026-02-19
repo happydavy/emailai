@@ -278,11 +278,22 @@ function App() {
       })
 
       setWaitingCallback(true)
-      // Important: open browser first, then start callback listener.
-      // If listener invoke is started first, it can block subsequent invoke calls on some runtimes.
+      await invoke('oauth_start_listener', { timeoutSecs: 180 })
       await openUrl(`${GOOGLE_AUTH_ENDPOINT}?${params.toString()}`)
-      const callbackCode = await invoke<string>('oauth_wait_code', { timeoutSecs: 180 })
-      await exchangeCodeValue(callbackCode)
+
+      const started = Date.now()
+      let gotCode = false
+      while (Date.now() - started < 185000) {
+        const poll = await invoke<{ running: boolean; code?: string; error?: string }>('oauth_poll_result')
+        if (poll.error) throw new Error(poll.error)
+        if (poll.code) {
+          await exchangeCodeValue(poll.code)
+          gotCode = true
+          break
+        }
+        await new Promise((r) => setTimeout(r, 500))
+      }
+      if (!gotCode) throw new Error('Timed out waiting for OAuth callback')
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to complete browser login')
     } finally {
