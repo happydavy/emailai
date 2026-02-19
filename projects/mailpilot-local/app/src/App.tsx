@@ -53,6 +53,7 @@ const GOOGLE_AUTH_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth'
 const GMAIL_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly'
 const REDIRECT_URI = 'http://127.0.0.1:8765/callback'
 const GOOGLE_CLIENT_ID = (import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined)?.trim() || ''
+const GOOGLE_CLIENT_SECRET = (import.meta.env.VITE_GOOGLE_CLIENT_SECRET as string | undefined)?.trim() || ''
 
 const KEYCHAIN_TOKEN_KEY = 'gmail_token'
 const KEYCHAIN_PKCE_KEY = 'gmail_pkce_verifier'
@@ -245,6 +246,9 @@ function App() {
       grant_type: 'authorization_code',
       redirect_uri: REDIRECT_URI,
     })
+    if (GOOGLE_CLIENT_SECRET) {
+      body.set('client_secret', GOOGLE_CLIENT_SECRET)
+    }
 
     const res = await fetch(GOOGLE_TOKEN_ENDPOINT, {
       method: 'POST',
